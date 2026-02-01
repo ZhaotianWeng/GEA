@@ -12,7 +12,7 @@ from swe_bench.harness import harness
 from polyglot.harness import harness as polyglot_harness
 from swe_bench.report import make_report
 from utils.common_utils import load_json_file
-from utils.evo_utils import get_model_patch_paths, get_all_performance, is_compiled_self_improve
+from utils.evo_utils import get_model_patch_paths, get_all_performance, is_compiled_self_improve, build_task_success_vector
 from utils.docker_utils import (
     build_dgm_container,
     cleanup_container,
@@ -92,7 +92,7 @@ Evaluation Result:
         # Fallback: return basic information if specific task logs are not available
         return f"Task ID: {task_id}\nParent Commit: {parent_commit}\nError retrieving task logs: {str(e)}"
 
-def diagnose_problem(entry, commit, root_dir, out_dir, patch_files=[], max_attempts=3, polyglot=False, group_improve=False, entry1=None, commit1=None, patch_files1=None, openhands=False, just_openhands=False, claude_model=None, diagnose_model=None):
+def diagnose_problem(entry, commit, root_dir, out_dir, patch_files=[], max_attempts=3, polyglot=False, group_improve=False, entry1=None, commit1=None, patch_files1=None, claude_model=None, diagnose_model=None):
     # Use diagnose_model parameter if provided, otherwise fallback to claude_model, otherwise use global diagnose_model
     # Store parameter in local variable to avoid shadowing global variable
     diagnose_model_param = diagnose_model
@@ -265,8 +265,6 @@ def diagnose_problem(entry, commit, root_dir, out_dir, patch_files=[], max_attem
             diagnose_sys_message, diagnose_prompt = get_diagnose_prompt_polyglot(
             entry, commit, root_dir, out_dir, dataset,
             patch_files=patch_files,
-            openhands=openhands,
-            just_openhands=just_openhands,
             commit1=commit1,
         )
         else: #group_improve为True,输入需要处理两个entry和两个commit
@@ -274,8 +272,6 @@ def diagnose_problem(entry, commit, root_dir, out_dir, patch_files=[], max_attem
             entry, commit, root_dir, out_dir, dataset,
             patch_files=patch_files,
             group_improve=True,
-            openhands=openhands,
-            just_openhands=just_openhands,
             entry1_id=entry1,
             commit1=commit1,
             patch_files1=patch_files1,
@@ -284,8 +280,6 @@ def diagnose_problem(entry, commit, root_dir, out_dir, patch_files=[], max_attem
         diagnose_sys_message, diagnose_prompt = get_diagnose_prompt_polyglot(
             entry, commit, root_dir, out_dir, dataset,
             patch_files=patch_files,
-            openhands=openhands,
-            just_openhands=just_openhands,
         )
     else:
         print(f"这里是self_improve_step.py的diagnose_problem函数268行，进入selfimprove流程或者group_improve分支中的p1/p2分支,非polyglot，混合父代是否开启: {group_improve}，查看参数,entry: {entry},commit: {commit},root_dir: {root_dir},out_dir: {out_dir},patch_files: {patch_files},max_attempts: {max_attempts},polyglot: {polyglot},dataset: {dataset}")
@@ -300,8 +294,6 @@ def diagnose_problem(entry, commit, root_dir, out_dir, patch_files=[], max_attem
         diagnose_sys_message, diagnose_prompt = get_diagnose_prompt_swe(
             entry, commit, root_dir, out_dir, dataset,
             patch_files=patch_files,
-            openhands=openhands,
-            just_openhands=just_openhands,
         )
     try:
         response, msg_history = get_response_from_llm(
@@ -327,8 +319,6 @@ def diagnose_problem(entry, commit, root_dir, out_dir, patch_files=[], max_attem
                 diagnose_model=diagnose_model,
                 max_attempts=max_attempts-1,
                 polyglot=polyglot,
-                openhands=openhands,
-                just_openhands=just_openhands,
             )
         else:
             return None
@@ -514,8 +504,6 @@ def self_improve(
     run_baseline=None,
     polyglot=False,
     group_improve=False,
-    openhands=False,
-    just_openhands=False,
     claude_model=None,  # Claude model to use for coding agent
     diagnose_model=None  # Model to use for diagnose (problem diagnosis and improvement diagnosis)
 ):  
@@ -654,9 +642,9 @@ def self_improve(
         # Handle group improvement entries
         if group_improve:
             print(f"Group improvement mode: {entry} with parent_commit: {parent_commit}")
-            problem_statement = diagnose_problem(entry0, parent_commit0, root_dir, out_dir_base, patch_files=patch_files, polyglot=polyglot, group_improve=True, entry1=entry1, commit1=parent_commit1,patch_files1=patch_files1, openhands=openhands, just_openhands=just_openhands, claude_model=claude_model, diagnose_model=diagnose_model)
+            problem_statement = diagnose_problem(entry0, parent_commit0, root_dir, out_dir_base, patch_files=patch_files, polyglot=polyglot, group_improve=True, entry1=entry1, commit1=parent_commit1,patch_files1=patch_files1, claude_model=claude_model, diagnose_model=diagnose_model)
         else:
-            problem_statement = diagnose_problem(entry, parent_commit, root_dir, out_dir_base, patch_files=patch_files, polyglot=polyglot, openhands=openhands, just_openhands=just_openhands, claude_model=claude_model, diagnose_model=diagnose_model)
+            problem_statement = diagnose_problem(entry, parent_commit, root_dir, out_dir_base, patch_files=patch_files, polyglot=polyglot, claude_model=claude_model, diagnose_model=diagnose_model)
         safe_log(f"problem_statement: {problem_statement}")
     else:
         safe_log("No entry provided. Exiting.")
@@ -693,7 +681,7 @@ def self_improve(
     if coding_agent_claude_model:
         safe_log(f"Using Claude model for coding agent (self-modification): {coding_agent_claude_model}")
     else:
-        safe_log("Using default model for coding agent (self-modification): o3-mini-2025-01-31")
+        safe_log("Using default model for coding agent (self-modification): Claude Opus 4.5")
     cmd = [
         "timeout", "2700",  # 45min timeout
         "python", "/dgm/coding_agent.py",
@@ -747,6 +735,13 @@ def self_improve(
                 run_harness_polyglot(entry, model_name_or_path, patch_files, num_evals, output_dir, metadata, run_id, test_more_threshold, test_task_list, test_task_list_more)
         except Exception as e:
             safe_log(f"Error while evaluating the self-improvement: {e}")
+
+    # Build task success vector (same order as swe_bench/subsets/task.json): 1 if resolved, 0 otherwise
+    if metadata.get('overall_performance'):
+        task_list_path = os.path.join(root_dir, 'swe_bench', 'subsets', 'task.json')
+        task_success_vector = build_task_success_vector(metadata['overall_performance'], task_list_path)
+        if task_success_vector is not None:
+            metadata['task_success_vector'] = task_success_vector
 
     # Post-self-improvement diagnosis
     if post_improve_diagnose:

@@ -4,14 +4,6 @@ import json
 from utils.common_utils import load_json_file, read_file
 from utils.docker_utils import safe_log
 
-# Import OpenHands tools reference
-try:
-    from prompts.openhands_tools_reference import get_openhands_tools_reference_prompt
-except ImportError:
-    # Fallback if the module doesn't exist
-    def get_openhands_tools_reference_prompt():
-        return ""
-
 coding_agent_summary = """# Coding Agent Summary
 
 - **Main File**: `coding_agent.py`
@@ -124,82 +116,6 @@ In <JSON>, provide a JSON response with the following fields:
 - "potential_improvements": Identify potential improvements to the coding agent that could enhance its coding capabilities. Focus on the agent's general coding abilities (e.g., better or new tools usable across any repository) rather than issue-specific fixes (e.g., tools only usable in one framework). All necessary dependencies and environment setup have already been handled, so do not focus on these aspects.
 - "improvement_proposal": Choose ONE high-impact improvement from the identified potential improvements and describe it in detail. This should be a focused and comprehensive plan to enhance the agent's overall coding ability.
 - "implementation_suggestion": Referring to the coding agent's summary and implementation, think critically about what feature or tool could be added or improved to best implement the proposed improvement. If the proposed feature can be implemented by modifying the existing tools, describe the modifications needed, instead of suggesting a new tool.
-- "problem_description": Phrase the improvement proposal and implementation suggestion as a GitHub issue description. It should clearly describe the feature so that a software engineer viewing the issue and the repository can implement it.
-
-Your response will be automatically parsed, so ensure that the string response is precisely in the correct format. Do NOT include the `<JSON>` tag in your output."""
-
-# Version with OpenHands reference (includes failure cases)
-diagnose_prompt_with_openhands = """
-# Agent Running Log
------ Agent Running Log Start -----
-{md_log}
------ Agent Running Log End -----
-
-# GitHub Issue
-The GitHub issue that the agent is trying to solve.
------ GitHub Issue Start -----
-{github_issue}
------ GitHub Issue End -----
-
-# Predicted Patch
-The agent's predicted patch to solve the issue.
------ Predicted Patch Start -----
-{predicted_patch}
------ Predicted Patch End -----
-
-# Private Test Patch
-SWE-bench's official private tests to detect whether the issue is solved. This is not available to the agent during evaluation. The agent should try to implement its own tests.
------ Private Test Patch Start -----
-{test_patch}
------ Private Test Patch End -----
-
-# Issue Test Results
-The test results from SWE-bench using the above official private tests.
------ Issue Test Results Start -----
-{eval_log}
------ Issue Test Results End -----
-
-{openhands_tools_reference}
-
-Respond precisely in the following format including the JSON start and end markers:
-
-```json
-<JSON>
-```
-
-In <JSON>, provide a JSON response with the following fields:
-- "log_summarization": Analyze the above logs and summarize how the agent tried to solve the GitHub issue. Note which tools and how they are used, the agent's problem-solving approach, and any issues encountered.
-- "potential_improvements": Identify potential improvements to the coding agent that could enhance its coding capabilities. Focus on the agent's general coding abilities (e.g., better or new tools usable across any repository) rather than issue-specific fixes (e.g., tools only usable in one framework). You can reference the OpenHands SDK tool implementations provided above as examples of high-quality tool design. All necessary dependencies and environment setup have already been handled, so do not focus on these aspects.
-- "improvement_proposal": Choose ONE high-impact improvement from the identified potential improvements and describe it in detail. This should be a focused and comprehensive plan to enhance the agent's overall coding ability.
-- "implementation_suggestion": Referring to the coding agent's summary and implementation, and the OpenHands SDK tool implementations provided above, think critically about what feature or tool could be added or improved to best implement the proposed improvement. You can reference the OpenHands implementations as examples of high-quality tool design. If the proposed feature can be implemented by modifying the existing tools, describe the modifications needed, instead of suggesting a new tool.
-- "problem_description": Phrase the improvement proposal and implementation suggestion as a GitHub issue description. It should clearly describe the feature so that a software engineer viewing the issue and the repository can implement it.
-
-Your response will be automatically parsed, so ensure that the string response is precisely in the correct format. Do NOT include the `<JSON>` tag in your output."""
-
-# Version with only OpenHands reference (no failure cases)
-diagnose_prompt_openhands_only = """
-# Coding Agent Implementation
------ Coding Agent Implementation Start -----
-{code}
------ Coding Agent Implementation End -----
-
-{openhands_tools_reference}
-
-## Task
-
-Based on the OpenHands SDK tool implementations provided above, analyze the current DGM agent's tools and propose improvements. Focus on general coding abilities and tools that can be used across any repository.
-
-Respond precisely in the following format including the JSON start and end markers:
-
-```json
-<JSON>
-```
-
-In <JSON>, provide a JSON response with the following fields:
-- "log_summarization": Analyze the current agent implementation and summarize the existing tools and their capabilities. Note the current tool design and any limitations you observe.
-- "potential_improvements": Identify potential improvements to the coding agent's tools based on the OpenHands SDK reference implementations. Focus on general coding abilities (e.g., better or new tools usable across any repository) rather than issue-specific fixes. All necessary dependencies and environment setup have already been handled, so do not focus on these aspects.
-- "improvement_proposal": Choose ONE high-impact improvement from the identified potential improvements and describe it in detail. This should be a focused and comprehensive plan to enhance the agent's overall coding ability, inspired by the OpenHands SDK implementations.
-- "implementation_suggestion": Referring to the coding agent's summary and implementation, and the OpenHands SDK tool implementations provided above, think critically about what feature or tool could be added or improved to best implement the proposed improvement. Use the OpenHands implementations as reference for how to implement the improvement. If the proposed feature can be implemented by modifying the existing tools, describe the modifications needed, instead of suggesting a new tool.
 - "problem_description": Phrase the improvement proposal and implementation suggestion as a GitHub issue description. It should clearly describe the feature so that a software engineer viewing the issue and the repository can implement it.
 
 Your response will be automatically parsed, so ensure that the string response is precisely in the correct format. Do NOT include the `<JSON>` tag in your output."""
@@ -547,7 +463,7 @@ The test results from SWE-bench using the above official private tests.
 ----- Issue Test Results End -----
 """
 
-def get_diagnose_prompt_swe(entry_id, commit, root_dir, out_dir, dataset, patch_files=[],group_improve=False, entry1_id=None, commit1=None, patch_files1=None, openhands=False, just_openhands=False):
+def get_diagnose_prompt_swe(entry_id, commit, root_dir, out_dir, dataset, patch_files=[],group_improve=False, entry1_id=None, commit1=None, patch_files1=None):
     if group_improve:
         if entry_id == 'solve_empty_patches' and entry1_id == 'solve_empty_patches':
             diagnose_prompt_out = diagnose_prompt_emptypatches_groupimprove + diagnose_prompt_1_2_3_last_sentence
@@ -643,40 +559,22 @@ def get_diagnose_prompt_swe(entry_id, commit, root_dir, out_dir, dataset, patch_
         diagnose_prompt_out = diagnose_prompt_contextlength
     else:
         # Get user prompt for the entry
-        if just_openhands:
-            # In just_openhands mode, we don't need failure logs
-            diagnose_prompt_out = ""  # Will be set later with code and OpenHands reference
-        else:
-            # Normal mode: get failure logs
-            md_logs, eval_logs, predicted_patches, eval_results = find_selfimprove_eval_logs(entry_id, out_dir, commit_id=commit)
-            md_log, eval_log, predicted_patch, eval_result = process_selfimprove_eval_logs(md_logs, eval_logs, predicted_patches, eval_results)
-            entry = next((e for e in dataset if e['instance_id'] == entry_id), None)
-            answer_patch = entry['patch']
-            test_patch = entry['test_patch']
-            github_issue = entry['problem_statement']
-            
-            # Choose prompt based on openhands flag
-            if openhands:
-                # Use prompt with failure cases + OpenHands reference
-                diagnose_prompt_out = swe_issue_prompt + diagnose_prompt_with_openhands.format(
-                    md_log=md_log, 
-                    eval_log=eval_log, 
-                    predicted_patch=predicted_patch, 
-                    answer_patch=answer_patch, 
-                    test_patch=test_patch, 
-                    github_issue=github_issue,
-                    openhands_tools_reference="{openhands_tools_reference}"  # Placeholder, will be filled later
-                )
-            else:
-                # Use original prompt without OpenHands reference
-                diagnose_prompt_out = swe_issue_prompt + diagnose_prompt.format(
-                    md_log=md_log, 
-                    eval_log=eval_log, 
-                    predicted_patch=predicted_patch, 
-                    answer_patch=answer_patch, 
-                    test_patch=test_patch, 
-                    github_issue=github_issue
-                )
+        # Normal mode: get failure logs
+        md_logs, eval_logs, predicted_patches, eval_results = find_selfimprove_eval_logs(entry_id, out_dir, commit_id=commit)
+        md_log, eval_log, predicted_patch, eval_result = process_selfimprove_eval_logs(md_logs, eval_logs, predicted_patches, eval_results)
+        entry = next((e for e in dataset if e['instance_id'] == entry_id), None)
+        answer_patch = entry['patch']
+        test_patch = entry['test_patch']
+        github_issue = entry['problem_statement']
+        
+        diagnose_prompt_out = swe_issue_prompt + diagnose_prompt.format(
+            md_log=md_log, 
+            eval_log=eval_log, 
+            predicted_patch=predicted_patch, 
+            answer_patch=answer_patch, 
+            test_patch=test_patch, 
+            github_issue=github_issue
+        )
 
     # Get system prompt
     code_files = ['coding_agent.py', 'tools/', 'utils/']
@@ -688,41 +586,10 @@ def get_diagnose_prompt_swe(entry_id, commit, root_dir, out_dir, dataset, patch_
     ]
     code_text = get_current_code(root_dir, code_files, patch_files=patch_files, exclude_files=exclude_files)
     
-    # Get OpenHands tools reference (only if needed)
-    openhands_reference = None
-    if openhands or just_openhands:
-        openhands_reference = get_openhands_tools_reference_prompt()
-    
-    # Handle prompt modes
-    if just_openhands:
-        # Mode 3: Only OpenHands reference (no failure cases)
-        diagnose_prompt_out = diagnose_prompt_openhands_only.format(
-            code=code_text,
-            openhands_tools_reference=openhands_reference
-        )
-        diagnose_system_message_out = coding_agent_summary + diagnose_system_message.format(code=code_text)
-    elif openhands:
-        # Mode 2: Failure cases + OpenHands reference
-        # Format the prompt with OpenHands reference if it contains placeholders
-        if '{openhands_tools_reference}' in diagnose_prompt_out:
-            diagnose_prompt_out = diagnose_prompt_out.format(openhands_tools_reference=openhands_reference)
-        elif isinstance(diagnose_prompt_out, str):
-            # For other prompts (like solve_empty_patches, etc.), append OpenHands reference
-            # Insert before the JSON response section if it exists
-            if '```json' in diagnose_prompt_out:
-                parts = diagnose_prompt_out.split('```json')
-                diagnose_prompt_out = parts[0] + '\n\n' + openhands_reference + '\n\n```json' + parts[1] if len(parts) > 1 else diagnose_prompt_out + '\n\n' + openhands_reference
-            else:
-                diagnose_prompt_out = diagnose_prompt_out + '\n\n' + openhands_reference
-        diagnose_system_message_out = coding_agent_summary + diagnose_system_message.format(code=code_text)
-    else:
-        # Mode 1: Original prompt without OpenHands reference
-        # diagnose_prompt_out is already set with original diagnose_prompt (no OpenHands)
-        diagnose_system_message_out = coding_agent_summary + diagnose_system_message.format(code=code_text)
-
+    diagnose_system_message_out = coding_agent_summary + diagnose_system_message.format(code=code_text)
     return diagnose_system_message_out, diagnose_prompt_out
 
-def get_diagnose_prompt_polyglot(entry_id, commit, root_dir, out_dir, dataset, patch_files=[], openhands=False, just_openhands=False, commit1=None):
+def get_diagnose_prompt_polyglot(entry_id, commit, root_dir, out_dir, dataset, patch_files=[], commit1=None):
 
     md_logs, eval_logs, predicted_patches, eval_results = find_selfimprove_eval_logs(entry_id, out_dir, commit_id=commit)
     md_log, eval_log, predicted_patch, eval_result = process_selfimprove_eval_logs(md_logs, eval_logs, predicted_patches, eval_results)
@@ -744,67 +611,26 @@ def get_diagnose_prompt_polyglot(entry_id, commit, root_dir, out_dir, dataset, p
     ]
     code_text = get_current_code(root_dir, code_files, patch_files=patch_files, exclude_files=exclude_files, is_polyglot=is_polyglot)
     
-    # Get OpenHands tools reference (only if needed)
-    openhands_reference = None
-    if openhands or just_openhands:
-        openhands_reference = get_openhands_tools_reference_prompt()
-    
-    if just_openhands:
-        # Mode 3: Only OpenHands reference (no failure cases)
-        diagnose_prompt_out = diagnose_prompt_openhands_only.format(
-            code=code_text,
-            openhands_tools_reference=openhands_reference
-        )
-        return coding_agent_summary_polyglot + diagnose_system_message.format(code=code_text), diagnose_prompt_out
-    
     import random
 
     if random.random() < 0.25:
         # Get user prompt for solving stochasticity
         diagnose_prompt_out = diagnose_prompt_stochasticity_polyglot.format(md_log=md_log)
-        # if openhands and openhands_reference:
-            # Add OpenHands reference if openhands is True
-        if '```json' in diagnose_prompt_out:
-            parts = diagnose_prompt_out.split('```json')
-            diagnose_prompt_out = parts[0] + '\n\n' + openhands_reference + '\n\n```json' + parts[1] if len(parts) > 1 else diagnose_prompt_out + '\n\n' + openhands_reference
-        else:
-            diagnose_prompt_out = diagnose_prompt_out + '\n\n' + openhands_reference
         return coding_agent_summary_polyglot + diagnose_system_message.format(code=code_text), diagnose_prompt_out
     if 'empty_patch' in eval_result:
         # Get user prompt for solving empty patches
         diagnose_prompt_out = diagnose_prompt_emptypatches_polyglot.format(md_log=md_log)
-        # if openhands and openhands_reference:
-            # Add OpenHands reference if openhands is True
-        if '```json' in diagnose_prompt_out:
-            parts = diagnose_prompt_out.split('```json')
-            diagnose_prompt_out = parts[0] + '\n\n' + openhands_reference + '\n\n```json' + parts[1] if len(parts) > 1 else diagnose_prompt_out + '\n\n' + openhands_reference
-        else:
-            diagnose_prompt_out = diagnose_prompt_out + '\n\n' + openhands_reference
         return coding_agent_summary_polyglot + diagnose_system_message.format(code=code_text), diagnose_prompt_out
     
     # Normal case with failure logs
-    if openhands:
-        # Mode 2: Failure cases + OpenHands reference
-        diagnose_prompt_out = polyglot_issue_prompt + diagnose_prompt_with_openhands.format(
-            md_log=md_log, 
-            eval_log=eval_log, 
-            predicted_patch=predicted_patch, 
-            answer_patch=answer_patch, 
-            test_patch=test_patch, 
-            github_issue=github_issue,
-            openhands_tools_reference=openhands_reference
-        )
-    else:
-        # Mode 1: Original prompt without OpenHands reference
-        # Note: polyglot doesn't have a separate diagnose_prompt without openhands, so we use diagnose_prompt
-        diagnose_prompt_out = polyglot_issue_prompt + diagnose_prompt.format(
-            md_log=md_log, 
-            eval_log=eval_log, 
-            predicted_patch=predicted_patch, 
-            answer_patch=answer_patch, 
-            test_patch=test_patch, 
-            github_issue=github_issue
-        )
+    diagnose_prompt_out = polyglot_issue_prompt + diagnose_prompt.format(
+        md_log=md_log, 
+        eval_log=eval_log, 
+        predicted_patch=predicted_patch, 
+        answer_patch=answer_patch, 
+        test_patch=test_patch, 
+        github_issue=github_issue
+    )
     return coding_agent_summary_polyglot + diagnose_system_message.format(code=code_text), diagnose_prompt_out
 
 

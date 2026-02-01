@@ -101,6 +101,27 @@ def get_all_performance(run_keyword, results_dir='./swe_bench'):
     
     return performance_results, overall_performance
 
+
+def build_task_success_vector(overall_performance, task_list_path):
+    """
+    Build a binary success vector for an agent: one entry per task in task_list_path.
+    For each task, 1 if the agent resolved it (task_id in total_resolved_ids), else 0.
+
+    Args:
+        overall_performance: dict with key 'total_resolved_ids' (list of resolved instance_ids).
+        task_list_path: path to JSON file containing list of task instance_ids (e.g. swe_bench/subsets/task.json).
+
+    Returns:
+        list of int (0 or 1) of length len(task_list), or None if overall_performance is None
+        or task_list_path does not exist.
+    """
+    if not overall_performance or not os.path.exists(task_list_path):
+        return None
+    task_list = load_json_file(task_list_path)
+    resolved_set = set(overall_performance.get('total_resolved_ids', []))
+    return [1 if tid in resolved_set else 0 for tid in task_list]
+
+
 def is_compiled_self_improve(metadata, num_swe_issues=[], logger=None):
     """
     Checks if the run was properly compiled and 'self-improved' by verifying:

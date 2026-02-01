@@ -4,6 +4,7 @@ import json
 import math
 import os
 import random
+import sys
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed, TimeoutError
 
 from prompts.self_improvement_prompt import find_selfimprove_eval_logs
@@ -51,6 +52,92 @@ def any_exceeding_context_length(output_dir, commit_id, instance_ids):
             return True
     return False
 
+
+def select_parents_by_performance_novelty(candidates, output_dir, K, M=4, epsilon=1e-8):
+    """
+    Select top-K parent agents by combined performance--novelty score.
+
+    For each agent i with task-success vector z_i and performance alpha_i:
+    - Cosine distance to j: d(i,j) = 1 - (z_i·z_j) / (||z_i|| ||z_j|| + epsilon)
+    - Novelty: nov(i) = (1/M) * sum of d(i,j) over M nearest (most similar) neighbors j
+    - Combined score: score(i) = alpha_i * sqrt(nov(i))
+    Returns the top-K agents by score(i).
+    """
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    task_list_path = os.path.join(script_dir, 'swe_bench', 'subsets', 'task.json')
+    commits = list(candidates.keys())
+    if not os.path.exists(task_list_path):
+        return commits[-K:] if len(commits) >= K else commits
+
+    task_list = load_json_file(task_list_path)
+    D = len(task_list)
+
+    # Build list of (commit, alpha, z) for agents that have task_success_vector
+    agents = []
+    for commit in candidates:
+        meta_path = os.path.join(output_dir, commit, 'metadata.json')
+        if not os.path.exists(meta_path):
+            continue
+        try:
+            meta = load_json_file(meta_path)
+        except Exception:
+            continue
+        z = meta.get('task_success_vector')
+        if z is None or len(z) != D:
+            continue
+        alpha = candidates[commit]['accuracy_score']
+        agents.append((commit, alpha, z))
+
+    if len(agents) < K:
+        commits = list(candidates.keys())
+        return commits[-K:] if len(commits) >= K else commits
+
+    n = len(agents)
+    M_actual = min(M, n - 1)
+    if M_actual <= 0:
+        # Only one agent or M=0: return last K from candidates
+        commits = [a[0] for a in agents]
+        return commits[-K:] if len(commits) >= K else commits
+
+    # For each i, compute novelty = mean of d(i,j) over M nearest neighbors j
+    nov = [0.0] * n
+    eps = epsilon
+    for i in range(n):
+        _, _, z_i = agents[i]
+        norm_i = math.sqrt(sum(x * x for x in z_i))
+        dists = []
+        for j in range(n):
+            if j == i:
+                continue
+            _, _, z_j = agents[j]
+            dot = sum(a * b for a, b in zip(z_i, z_j))
+            norm_j = math.sqrt(sum(x * x for x in z_j))
+            # d(i,j) = 1 - (z_i·z_j) / (||z_i|| ||z_j|| + epsilon)
+            denom = norm_i * norm_j + eps
+            sim = dot / denom if denom > 0 else 0.0
+            d_ij = 1.0 - sim
+            dists.append((d_ij, j))
+        dists.sort(key=lambda x: x[0])
+        nov[i] = sum(dists[k][0] for k in range(M_actual)) / M_actual
+
+    # score(i) = alpha_i * sqrt(nov(i)); rank by score descending
+    scored = []
+    for i in range(n):
+        commit, alpha, _ = agents[i]
+        sqrt_nov = math.sqrt(nov[i])
+        score_i = alpha * sqrt_nov
+        scored.append((score_i, commit, alpha, sqrt_nov))
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    # Debug: print performance, sqrt(novelty), and performance*sqrt(novelty) for each agent (after ranking)
+    print("[performance_novelty] Ranked agents (performance, sqrt(novelty), performance*sqrt(novelty)):")
+    for rank, (score_i, commit, alpha, sqrt_nov) in enumerate(scored, start=1):
+        print(f"  {rank}. {commit}: performance={alpha:.6f}, sqrt(novelty)={sqrt_nov:.6f}, score={score_i:.6f}")
+    sys.stdout.flush()
+
+    return [commit for _, commit, _, _ in scored[:K]]
+
+
 def choose_selfimproves(output_dir, archive, selfimprove_size, method='random', run_baseline=None, polyglot=False):
     """
     Choose self-improve attempts for the current generation.
@@ -84,6 +171,11 @@ def choose_selfimproves(output_dir, archive, selfimprove_size, method='random', 
         # Always take the last commit
         commits = list(candidates.keys())
         parent_commits = commits[-1:]
+    elif method == 'performance_novelty':
+        # Rank by performance--novelty score; select top selfimprove_size
+        parent_commits = select_parents_by_performance_novelty(candidates, output_dir, selfimprove_size)
+        if len(parent_commits) < selfimprove_size:
+            parent_commits.extend(random.choices(parent_commits, k=selfimprove_size - len(parent_commits)))
     elif method == 'score_prop':
         # Choose parents based on score
         commits = list(candidates.keys())
@@ -212,6 +304,11 @@ def choose_group_improves(output_dir, archive, groupimprove_size, method='random
         # Always take the last commit
         commits = list(candidates.keys())
         parent_commits = commits[-1:]
+    elif method == 'performance_novelty':
+        # Rank by performance--novelty score; select top groupimprove_size
+        parent_commits = select_parents_by_performance_novelty(candidates, output_dir, groupimprove_size)
+        if len(parent_commits) < groupimprove_size:
+            parent_commits.extend(random.choices(parent_commits, k=groupimprove_size - len(parent_commits)))
     elif method == 'score_prop':
         # Choose parents based on score
         commits = list(candidates.keys())
@@ -306,11 +403,18 @@ def choose_group_improves(output_dir, archive, groupimprove_size, method='random
         selfimprove_entries.append((parent_commit, entry))
     
     if len(selfimprove_entries) >= 2:
-        combined_entry = (
+        # combined_entry1: (p1+p2, e1+e2) -> 在 self_improve_step 里 codebase 为 P1（split 后第一个）
+        combined_entry1 = (
+            selfimprove_entries[0][0] + "+" + selfimprove_entries[1][0],
+            selfimprove_entries[0][1] + "+" + selfimprove_entries[1][1],
+        )
+        # combined_entry2: (p2+p1, e2+e1) -> 在 self_improve_step 里 codebase 为 P2（split 后第一个）
+        combined_entry2 = (
             selfimprove_entries[1][0] + "+" + selfimprove_entries[0][0],
             selfimprove_entries[1][1] + "+" + selfimprove_entries[0][1],
         )
-        selfimprove_entries[-1] = combined_entry
+        selfimprove_entries[0] = combined_entry1
+        selfimprove_entries[-1] = combined_entry2
     # selfimprove_entries.append((selfimprove_entries[0][0]+"+"+selfimprove_entries[1][0], selfimprove_entries[0][1]+"+"+selfimprove_entries[1][1]))
     # selfimprove_entries1 = [(selfimprove_entries[0][0]+"+"+selfimprove_entries[1][0], selfimprove_entries[0][1]+"+"+selfimprove_entries[1][1])]
     safe_log(f"这里是DGM_outer.py的choose_group_improves函数256行，groupimprove_entries: {selfimprove_entries}")
@@ -321,92 +425,92 @@ def choose_group_improves(output_dir, archive, groupimprove_size, method='random
 
     return selfimprove_entries
 
-def choose_group_improves_cursor(output_dir, archive, groupimprove_size, method='random', run_baseline=None, polyglot=False):
-    """
-    Choose group improvement attempts for the current generation.
-    Selects groupimprove_size parent agents and generates 3 children: p1, p2, p1+p2.
-    For each child, selects specific task logs based on parent performance (similar to choose_selfimproves).
-    """
-    groupimprove_entries = []
+# def choose_group_improves_cursor(output_dir, archive, groupimprove_size, method='random', run_baseline=None, polyglot=False):
+#     """
+#     Choose group improvement attempts for the current generation.
+#     Selects groupimprove_size parent agents and generates 3 children: p1, p2, p1+p2.
+#     For each child, selects specific task logs based on parent performance (similar to choose_selfimproves).
+#     """
+#     groupimprove_entries = []
     
-    # Get parent candidates (same logic as choose_selfimproves)
-    candidates = {}
-    for commit in archive:
-        try:
-            metadata_path = os.path.join(output_dir, commit, "metadata.json")
-            metadata = load_json_file(metadata_path)
-            candidates[commit] = {
-                'accuracy_score': metadata['overall_performance']['accuracy_score'],
-                'total_unresolved_ids': metadata['overall_performance']['total_unresolved_ids'],
-                'total_emptypatch_ids': metadata['overall_performance']['total_emptypatch_ids'],
-                'total_resolved_ids': metadata['overall_performance']['total_resolved_ids'],
-                'children_count': 0,
-            }
-            # update children count, parent should already be in the archive
-            if commit != 'initial':
-                parent_commit = metadata['parent_commit']
-                candidates[parent_commit]['children_count'] += 1
-        except Exception as e:
-            # probably because swe-eval failed, generated code did not compile, etc.
-            print(f"{commit} not eligible for being a parent: {e}")
-            continue
+#     # Get parent candidates (same logic as choose_selfimproves)
+#     candidates = {}
+#     for commit in archive:
+#         try:
+#             metadata_path = os.path.join(output_dir, commit, "metadata.json")
+#             metadata = load_json_file(metadata_path)
+#             candidates[commit] = {
+#                 'accuracy_score': metadata['overall_performance']['accuracy_score'],
+#                 'total_unresolved_ids': metadata['overall_performance']['total_unresolved_ids'],
+#                 'total_emptypatch_ids': metadata['overall_performance']['total_emptypatch_ids'],
+#                 'total_resolved_ids': metadata['overall_performance']['total_resolved_ids'],
+#                 'children_count': 0,
+#             }
+#             # update children count, parent should already be in the archive
+#             if commit != 'initial':
+#                 parent_commit = metadata['parent_commit']
+#                 candidates[parent_commit]['children_count'] += 1
+#         except Exception as e:
+#             # probably because swe-eval failed, generated code did not compile, etc.
+#             print(f"{commit} not eligible for being a parent: {e}")
+#             continue
 
-    # Choose parents based on method (same logic as choose_selfimproves)
-    if run_baseline == 'no_darwin':
-        # Choose parents randomly for no_darwin baseline
-        parent_commits = random.choices(list(candidates.keys()), k=groupimprove_size)
-    elif method == 'score_prop':
-        # Choose parents based on score
-        commits = list(candidates.keys())
-        scores = [candidates[commit]['accuracy_score'] for commit in commits]
-        scores = [1 / (1 + math.exp(-10*(score-0.5))) for score in scores]
-        probabilities = [score / sum(scores) for score in scores]
-        print(commits)
-        parent_commits = random.choices(commits, probabilities, k=groupimprove_size)
-    elif method == 'score_child_prop':
-        # Choose parents based on score and the number of children
-        commits = list(candidates.keys())
-        scores = [candidates[commit]['accuracy_score'] for commit in commits]
-        scores = [1 / (1 + math.exp(-10*(score-0.5))) for score in scores]
-        children_counts = [candidates[commit]['children_count'] for commit in commits]
-        children_counts = [1 / (1 + count) for count in children_counts]
-        probabilities = [score * count for score, count in zip(scores, children_counts)]
-        probabilities = [prob / sum(probabilities) for prob in probabilities]
-        parent_commits = random.choices(commits, probabilities, k=groupimprove_size)
-    elif method == 'best':
-        # Choose parents with the best score
-        sorted_commits = sorted(candidates, key=lambda x: candidates[x]['accuracy_score'])
-        parent_commits = sorted_commits[:min(groupimprove_size, len(sorted_commits))]
-        if len(parent_commits) < groupimprove_size:
-            parent_commits.extend(random.choices(parent_commits, k=groupimprove_size - len(parent_commits)))
-    else:
-        # Choose parents randomly
-        parent_commits = random.choices(list(candidates.keys()), k=groupimprove_size)
+#     # Choose parents based on method (same logic as choose_selfimproves)
+#     if run_baseline == 'no_darwin':
+#         # Choose parents randomly for no_darwin baseline
+#         parent_commits = random.choices(list(candidates.keys()), k=groupimprove_size)
+#     elif method == 'score_prop':
+#         # Choose parents based on score
+#         commits = list(candidates.keys())
+#         scores = [candidates[commit]['accuracy_score'] for commit in commits]
+#         scores = [1 / (1 + math.exp(-10*(score-0.5))) for score in scores]
+#         probabilities = [score / sum(scores) for score in scores]
+#         print(commits)
+#         parent_commits = random.choices(commits, probabilities, k=groupimprove_size)
+#     elif method == 'score_child_prop':
+#         # Choose parents based on score and the number of children
+#         commits = list(candidates.keys())
+#         scores = [candidates[commit]['accuracy_score'] for commit in commits]
+#         scores = [1 / (1 + math.exp(-10*(score-0.5))) for score in scores]
+#         children_counts = [candidates[commit]['children_count'] for commit in commits]
+#         children_counts = [1 / (1 + count) for count in children_counts]
+#         probabilities = [score * count for score, count in zip(scores, children_counts)]
+#         probabilities = [prob / sum(probabilities) for prob in probabilities]
+#         parent_commits = random.choices(commits, probabilities, k=groupimprove_size)
+#     elif method == 'best':
+#         # Choose parents with the best score
+#         sorted_commits = sorted(candidates, key=lambda x: candidates[x]['accuracy_score'])
+#         parent_commits = sorted_commits[:min(groupimprove_size, len(sorted_commits))]
+#         if len(parent_commits) < groupimprove_size:
+#             parent_commits.extend(random.choices(parent_commits, k=groupimprove_size - len(parent_commits)))
+#     else:
+#         # Choose parents randomly
+#         parent_commits = random.choices(list(candidates.keys()), k=groupimprove_size)
 
-    # Generate 3 children: p1, p2, p1+p2 with specific task selection
-    if len(parent_commits) >= 2:
-        p1, p2 = parent_commits[0], parent_commits[1]
+#     # Generate 3 children: p1, p2, p1+p2 with specific task selection
+#     if len(parent_commits) >= 2:
+#         p1, p2 = parent_commits[0], parent_commits[1]
         
-        # Child 1: p1 only - select specific task for p1
-        p1_task = _select_task_for_parent(candidates[p1], output_dir, p1, polyglot)
-        groupimprove_entries.append((f"{p1}+{p1_task}", 'group_p1'))
+#         # Child 1: p1 only - select specific task for p1
+#         p1_task = _select_task_for_parent(candidates[p1], output_dir, p1, polyglot)
+#         groupimprove_entries.append((f"{p1}+{p1_task}", 'group_p1'))
         
-        # Child 2: p2 only - select specific task for p2
-        p2_task = _select_task_for_parent(candidates[p2], output_dir, p2, polyglot)
-        groupimprove_entries.append((f"{p2}+{p2_task}", 'group_p2'))
+#         # Child 2: p2 only - select specific task for p2
+#         p2_task = _select_task_for_parent(candidates[p2], output_dir, p2, polyglot)
+#         groupimprove_entries.append((f"{p2}+{p2_task}", 'group_p2'))
         
-        # Child 3: p1+p2 combined - select specific tasks for both parents
-        p1_p2_tasks = f"{p1_task}+{p2_task}"
-        groupimprove_entries.append((f"{p1}+{p2}+{p1_p2_tasks}", 'group_p1_p2'))
-    else:
-        # Fallback: if not enough parents, use single parent for all children
-        parent = parent_commits[0] if parent_commits else 'initial'
-        parent_task = _select_task_for_parent(candidates.get(parent, {}), output_dir, parent, polyglot)
-        groupimprove_entries.append((f"{parent}+{parent_task}", 'group_p1'))
-        groupimprove_entries.append((f"{parent}+{parent_task}", 'group_p2'))
-        groupimprove_entries.append((f"{parent}+{parent}+{parent_task}+{parent_task}", 'group_p1_p2'))
+#         # Child 3: p1+p2 combined - select specific tasks for both parents
+#         p1_p2_tasks = f"{p1_task}+{p2_task}"
+#         groupimprove_entries.append((f"{p1}+{p2}+{p1_p2_tasks}", 'group_p1_p2'))
+#     else:
+#         # Fallback: if not enough parents, use single parent for all children
+#         parent = parent_commits[0] if parent_commits else 'initial'
+#         parent_task = _select_task_for_parent(candidates.get(parent, {}), output_dir, parent, polyglot)
+#         groupimprove_entries.append((f"{parent}+{parent_task}", 'group_p1'))
+#         groupimprove_entries.append((f"{parent}+{parent_task}", 'group_p2'))
+#         groupimprove_entries.append((f"{parent}+{parent}+{parent_task}+{parent_task}", 'group_p1_p2'))
 
-    return groupimprove_entries
+#     return groupimprove_entries
 
 
 def _select_task_for_parent(parent_data, output_dir, parent_commit, polyglot=False):
@@ -516,14 +620,20 @@ def get_full_eval_threshold(output_dir, archive):
     return threshold
 
 def main():
+    # When stdout is redirected (e.g. nohup ... > log), use line buffering so print() appears immediately in the log
+    if not sys.stdout.isatty() and hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(line_buffering=True)
+    if not sys.stderr.isatty() and hasattr(sys.stderr, 'reconfigure'):
+        sys.stderr.reconfigure(line_buffering=True)
+
     parser = argparse.ArgumentParser(description="Darwin Godel Machine!")
     parser.add_argument("--max_generation", type=int, default=80, help="Maximum number of evolution iterations.")
     parser.add_argument("--selfimprove_size", type=int, default=2, help="Number of self-improvements attempts per DGM generation.")
     parser.add_argument("--selfimprove_workers", type=int, default=2, help="Number of parallel workers for self-improvement attempts.")
-    parser.add_argument("--groupimprove_size", type=int, default=None, help="Number of parent agents for group improvement (must be 2). When set, generates 3 children: p1, p2, p1+p2.")
+    parser.add_argument("--groupimprove_size", type=int, default=None, help="Number of parent agents for group improvement (By default to be 2)")
     parser.add_argument(
         "--choose_selfimproves_method", type=str, default='score_child_prop',
-        choices=['random', 'score_prop', 'score_child_prop', 'best'],
+        choices=['random', 'score_prop', 'score_child_prop', 'best', 'performance_novelty'],
         help="Method to choose self-improve attempts.",
     )
     parser.add_argument("--continue_from", type=str, default=None, help="Directory to continue the run from.")
@@ -551,23 +661,7 @@ def main():
         choices=['claude_haiku_4.5', 'claude_sonnet_4.5'],
         help="Model to use for diagnose (problem diagnosis and improvement diagnosis). Default is 'o1-2024-12-17' (OpenAI). Use 'claude_haiku_4.5' or 'claude_sonnet_4.5' to use Claude models instead."
     )
-    parser.add_argument(
-        "--openhands",
-        default=False,
-        action='store_true',
-        help="If True, use prompt with both failure cases and OpenHands tools reference. If False and --just_openhands is also False, use original DGM prompt without OpenHands."
-    )
-    parser.add_argument(
-        "--just_openhands",
-        default=False,
-        action='store_true',
-        help="If True, only use OpenHands tools reference for improvement (no failure cases). This takes precedence over --openhands."
-    )
     args = parser.parse_args()
-    
-    # Validate that both flags are not set simultaneously
-    if args.openhands and args.just_openhands:
-        raise ValueError("Cannot use both --openhands and --just_openhands simultaneously. Use --just_openhands for OpenHands-only mode, or --openhands for failure cases + OpenHands mode.")
     
     # Set coding agent Claude model based on argument
     if args.claude_model:
@@ -638,8 +732,6 @@ def main():
             futures = [
                 executor.submit(
                     self_improve,
-                    openhands=args.openhands,
-                    just_openhands=args.just_openhands,
                     parent_commit=parent_commit,
                     output_dir=output_dir,
                     force_rebuild=False,
