@@ -73,6 +73,9 @@ replace_*.py
 # tests directory
 tests/
 
+# ignore directory
+ignore/
+
 # Root level markdown files except README.md
 /*.md
 !README.md
