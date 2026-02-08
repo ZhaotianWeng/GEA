@@ -129,7 +129,7 @@ def process_entry(entry, out_dname, model_name_or_path, model_patch_paths):
             safe_log("Using default Claude model for coding agent: Opus 4.5")
         safe_log("Running the agent")
         cmd = [
-            "timeout", "600",  # 10 min timeout
+            "timeout", "10800",  # 3h timeout per instance
             "python", "/dgm/coding_agent.py",
             "--problem_statement", problem_statement,
             "--git_dir", "/testbed/",

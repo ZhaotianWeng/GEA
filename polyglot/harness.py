@@ -140,12 +140,14 @@ def process_entry(entry, out_dname, model_name_or_path, model_patch_paths):
             chat_history_file = out_dname / Path(chat_history_file_container).name
             copy_from_container(container, chat_history_file_container, chat_history_file)
 
-        # Get model_patch
+        # Get model_patch (ensure trailing newline for valid patch format)
         logger.info("Getting model_patch")
         exec_result = container.exec_run("cat /dgm/model_patch.diff")
         log_container_output(exec_result)
         model_patch = ''
         model_patch = exec_result.output.decode()
+        if model_patch and not model_patch.endswith('\n'):
+            model_patch = model_patch + '\n'
 
         # Additional proposed model patches
         proposed_model_patches = []
@@ -266,11 +268,13 @@ def harness(
     """
     if model_patch_paths:
         for model_patch_path in model_patch_paths:
-            # Read and modify model patch
+            # Read and modify model patch; normalize so every line ends with newline (double insurance for patch command)
             with open(model_patch_path, 'r') as f:
                 patch_content = f.read()
             patch_content = remove_patch_by_files(patch_content)
-            # Placeholder for any patch modifications if needed
+            if patch_content.strip():
+                lines = patch_content.splitlines()
+                patch_content = '\n'.join(lines) + '\n'
             with open(model_patch_path, 'w') as f:
                 f.write(patch_content)
 

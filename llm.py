@@ -7,7 +7,7 @@ import anthropic
 import backoff
 import openai
 
-MAX_OUTPUT_TOKENS = 4096
+MAX_OUTPUT_TOKENS = 8192
 AVAILABLE_LLMS = [
     # Anthropic models
     "claude-3-5-haiku-20241022",  # ✅ Haiku 3.5 - 快速且高性价比

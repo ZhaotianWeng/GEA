@@ -648,11 +648,11 @@ def main():
     # baselines
     parser.add_argument("--run_baseline", type=str, default=None, choices=['no_selfimprove', 'no_darwin'], help="Baseline to run.")
     parser.add_argument(
-        "--claude_model", 
-        type=str, 
+        "--coding_agent",
+        type=str,
         default=None,
         choices=['claude_haiku_4.5', 'claude_sonnet_4.5'],
-        help="Claude model to use for coding agent. Default is Opus 4.5. Use 'claude_haiku_4.5' to use Haiku 4.5, or 'claude_sonnet_4.5' to use Sonnet 4.5."
+        help="Coding agent model (same for self-improvement and evaluation). Use 'claude_haiku_4.5' or 'claude_sonnet_4.5'. Default is Opus 4.5."
     )
     parser.add_argument(
         "--diagnose_model",
@@ -663,13 +663,12 @@ def main():
     )
     args = parser.parse_args()
     
-    # Set coding agent Claude model based on argument
-    if args.claude_model:
-        os.environ['CODING_AGENT_CLAUDE_MODEL'] = args.claude_model
-        print(f"Using Claude model for coding agent: {args.claude_model}")
+    # Set coding agent model based on argument (used for both self-improvement and evaluation)
+    if args.coding_agent:
+        os.environ['CODING_AGENT_CLAUDE_MODEL'] = args.coding_agent
+        print(f"Using coding agent: {args.coding_agent}")
     else:
-        # Default to Opus 4.5 (no environment variable set, will use default)
-        print("Using default Claude model for coding agent: Opus 4.5")
+        print("Using default coding agent: Opus 4.5")
 
     # Validate groupimprove_size parameter
     if args.groupimprove_size is not None:
@@ -744,7 +743,7 @@ def main():
                     polyglot=args.polyglot,
                     full_eval_threshold=None if args.no_full_eval else get_full_eval_threshold(output_dir, archive),
                     run_baseline=args.run_baseline,
-                    claude_model=args.claude_model,
+                    coding_agent=args.coding_agent,
                     diagnose_model=args.diagnose_model,
                 )
                 for parent_commit, entry in selfimprove_entries

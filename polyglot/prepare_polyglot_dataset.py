@@ -201,9 +201,9 @@ def register_git(benchmark_path):
                 result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=practice_dir, check=True, capture_output=True, text=True)
                 solution_commit = result.stdout.strip()
 
-                # Then adding everything else
+                # Then adding everything else (new commit, do not use --amend so solution_commit and all_files_commit differ)
                 subprocess.run(["git", "add", "."], cwd=practice_dir, check=True)
-                subprocess.run(["git", "commit", "--amend", "-m", "all files"], cwd=practice_dir, check=True)
+                subprocess.run(["git", "commit", "-m", "all files"], cwd=practice_dir, check=True)
                 
                 all_files_commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=practice_dir, check=True, capture_output=True, text=True).stdout.strip()
 

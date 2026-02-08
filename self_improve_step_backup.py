@@ -92,15 +92,17 @@ Evaluation Result:
         # Fallback: return basic information if specific task logs are not available
         return f"Task ID: {task_id}\nParent Commit: {parent_commit}\nError retrieving task logs: {str(e)}"
 
-def diagnose_problem(entry, commit, root_dir, out_dir, patch_files=[], max_attempts=3, polyglot=False, group_improve=False, entry1=None, commit1=None, patch_files1=None, coding_agent=None, diagnose_model=None):
-    # Use diagnose_model parameter if provided, otherwise use global diagnose_model (e.g. o1).
-    # Coding agent (self-improvement and evaluation) is controlled separately by coding_agent / CODING_AGENT_CLAUDE_MODEL.
+def diagnose_problem(entry, commit, root_dir, out_dir, patch_files=[], max_attempts=3, polyglot=False, group_improve=False, entry1=None, commit1=None, patch_files1=None, claude_model=None, diagnose_model=None):
+    # Use diagnose_model parameter if provided, otherwise fallback to claude_model, otherwise use global diagnose_model
+    # Store parameter in local variable to avoid shadowing global variable
     diagnose_model_param = diagnose_model
     if diagnose_model_param:
         model_to_use = get_bedrock_model_name(diagnose_model_param)
+    elif claude_model:
+        model_to_use = get_bedrock_model_name(claude_model)
     else:
-        model_to_use = globals()['diagnose_model']  # default: 'o1-2024-12-17'
-    safe_log(f"Using model for problem diagnosis: {model_to_use}")
+        # Access the global variable using globals() to avoid conflict with parameter name
+        model_to_use = globals()['diagnose_model']  # This refers to the global variable 'diagnose_model' = 'o1-2024-12-17'
     client = create_client(model_to_use)
     
 #     # Handle group improvement entries
@@ -313,7 +315,7 @@ def diagnose_problem(entry, commit, root_dir, out_dir, patch_files=[], max_attem
             return diagnose_problem(
                 entry, commit, root_dir, out_dir,
                 patch_files=patch_files,
-                coding_agent=coding_agent,
+                claude_model=claude_model,
                 diagnose_model=diagnose_model,
                 max_attempts=max_attempts-1,
                 polyglot=polyglot,
@@ -350,8 +352,8 @@ def diagnose_improvement(
     if diagnose_model_param:
         model_to_use = get_bedrock_model_name(diagnose_model_param)
     else:
-        model_to_use = globals()['diagnose_model']  # default: 'o1-2024-12-17'
-    safe_log(f"Using model for improvement diagnosis: {model_to_use}")
+        # Access the global variable using globals() to avoid conflict with parameter name
+        model_to_use = globals()['diagnose_model']  # This refers to the global variable 'diagnose_model' = 'o1-2024-12-17'
     client = create_client(model_to_use)
     diagnose_sys_message, diagnose_prompt = get_diagnose_improvement_prompt(
         entry, parent_commit, root_dir, model_patch_file, out_dir, run_id, dataset,
@@ -446,11 +448,11 @@ def run_harness_swe(entry, model_name_or_path, patch_files, num_evals, output_di
 def run_harness_polyglot(entry, model_name_or_path, patch_files, num_evals, output_dir, metadata, run_id, test_more_threshold, test_task_list, test_task_list_more):
     safe_log('Start harness')
     test_task_list = [entry] if test_task_list is None else test_task_list
-    safe_log(f'workers {min(5, len(test_task_list))}')
+    safe_log(f'workers {min(10, len(test_task_list))}')
     dnames = polyglot_harness(
         test_task_list=test_task_list,
         num_samples=-1,
-        max_workers=min(5, len(test_task_list)),
+        max_workers=min(10, len(test_task_list)),
         model_name_or_path=model_name_or_path,
         model_patch_paths=patch_files,
         num_evals=num_evals,
@@ -472,7 +474,7 @@ def run_harness_polyglot(entry, model_name_or_path, patch_files, num_evals, outp
         dnames = polyglot_harness(
             test_task_list=test_task_list_more,
             num_samples=-1,
-            max_workers=min(5, len(test_task_list_more)),
+            max_workers=50,
             model_name_or_path=model_name_or_path,
             model_patch_paths=patch_files,
             num_evals=num_evals,
@@ -502,7 +504,7 @@ def self_improve(
     run_baseline=None,
     polyglot=False,
     group_improve=False,
-    coding_agent=None,  # Coding agent model (same for self-improvement and evaluation), e.g. claude_haiku_4.5
+    claude_model=None,  # Claude model to use for coding agent
     diagnose_model=None  # Model to use for diagnose (problem diagnosis and improvement diagnosis)
 ):  
 
@@ -642,9 +644,9 @@ def self_improve(
         # Handle group improvement entries
         if group_improve:
             print(f"Group improvement mode: {entry} with parent_commit: {parent_commit}")
-            problem_statement = diagnose_problem(entry0, parent_commit0, root_dir, out_dir_base, patch_files=patch_files, polyglot=polyglot, group_improve=True, entry1=entry1, commit1=parent_commit1,patch_files1=patch_files1, coding_agent=coding_agent, diagnose_model=diagnose_model)
+            problem_statement = diagnose_problem(entry0, parent_commit0, root_dir, out_dir_base, patch_files=patch_files, polyglot=polyglot, group_improve=True, entry1=entry1, commit1=parent_commit1,patch_files1=patch_files1, claude_model=claude_model, diagnose_model=diagnose_model)
         else:
-            problem_statement = diagnose_problem(entry, parent_commit, root_dir, out_dir_base, patch_files=patch_files, polyglot=polyglot, coding_agent=coding_agent, diagnose_model=diagnose_model)
+            problem_statement = diagnose_problem(entry, parent_commit, root_dir, out_dir_base, patch_files=patch_files, polyglot=polyglot, claude_model=claude_model, diagnose_model=diagnose_model)
         safe_log(f"problem_statement: {problem_statement}")
     else:
         safe_log("No entry provided. Exiting.")
@@ -665,8 +667,8 @@ def self_improve(
     safe_log("Running self-improvement")
     chat_history_file_container = "/dgm/self_evo.md"
     test_description = get_test_description(swerepo=False)
-    # Use coding_agent parameter if provided, otherwise use environment variable (set from --coding_agent)
-    coding_agent_model = coding_agent if coding_agent else os.getenv('CODING_AGENT_CLAUDE_MODEL')
+    # Use claude_model parameter if provided, otherwise use environment variable
+    coding_agent_claude_model = claude_model if claude_model else os.getenv('CODING_AGENT_CLAUDE_MODEL')
     env_vars = {
         "ANTHROPIC_API_KEY": os.getenv('ANTHROPIC_API_KEY'),
         "OPENAI_API_KEY": os.getenv('OPENAI_API_KEY'),
@@ -675,12 +677,13 @@ def self_improve(
         "AWS_REGION_NAME": os.getenv('AWS_REGION_NAME'),
         "AWS_ACCESS_KEY_ID": os.getenv('AWS_ACCESS_KEY_ID'),
         "AWS_SECRET_ACCESS_KEY": os.getenv('AWS_SECRET_ACCESS_KEY'),
-        "CODING_AGENT_CLAUDE_MODEL": coding_agent_model,  # Pass coding agent model to container
+        "CODING_AGENT_CLAUDE_MODEL": coding_agent_claude_model,  # Pass Claude model selection to container
     }
-    if coding_agent_model:
-        safe_log(f"Using coding agent (self-modification): {coding_agent_model}")
+    # Log which Claude model is being used
+    if coding_agent_claude_model:
+        safe_log(f"Using Claude model for coding agent (self-modification): {coding_agent_claude_model}")
     else:
-        safe_log("Using default coding agent (self-modification): Opus 4.5")
+        safe_log("Using default model for coding agent (self-modification): Claude Opus 4.5")
     cmd = [
         "timeout", "2700",  # 45min timeout
         "python", "/dgm/coding_agent.py",

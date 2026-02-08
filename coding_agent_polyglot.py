@@ -112,19 +112,18 @@ class AgenticSystem:
         self.self_improve = self_improve
         self.language = language
 
-        # Set the code model based on whether self-improvement is enabled
-        # If self-improving, check for CODING_AGENT_CLAUDE_MODEL environment variable first
-        if self_improve:
-            coding_agent_claude_model = os.getenv('CODING_AGENT_CLAUDE_MODEL')
-            if coding_agent_claude_model:
-                # Use Claude model from environment variable
-                # Import the function to get Claude model dynamically
-                from llm_withtools import _get_claude_model
-                self.code_model = _get_claude_model()
-            else:
-                # Default to OpenAI model for self-improvement
-                self.code_model = OPENAI_MODEL
+        # Set the code model: use same logic for both evaluation and self-improvement.
+        # CODING_AGENT_CLAUDE_MODEL is set by DGM_outer from --coding_agent and passed into the container.
+        coding_agent_model = os.getenv('CODING_AGENT_CLAUDE_MODEL')
+        if coding_agent_model:
+            # Use coding agent from environment variable (--coding_agent) for both eval and self-improve
+            from llm_withtools import _get_claude_model
+            self.code_model = _get_claude_model()
+        elif self_improve:
+            # Self-improve only: default when --coding_agent not set
+            self.code_model = OPENAI_MODEL
         else:
+            # Evaluation only: default when --coding_agent not set (e.g. legacy GLM path)
             self.code_model = GLM_MODEL
 
         # Initialize logger and store it in thread-local storage
@@ -190,8 +189,10 @@ def main():
     # Run the agentic system to try to solve the problem
     agentic_system.forward()
 
-    # Get code diff and save to model_patch.diff
+    # Get code diff and save to model_patch.diff (trailing newline required for valid patch format)
     model_patch = diff_versus_commit(args.git_dir, args.base_commit)
+    if model_patch and not model_patch.endswith('\n'):
+        model_patch = model_patch + '\n'
     model_patch_outfile = os.path.join(args.outdir, 'model_patch.diff') if args.outdir else 'model_patch.diff'
     with open(model_patch_outfile, 'w') as f:
         f.write(model_patch)
